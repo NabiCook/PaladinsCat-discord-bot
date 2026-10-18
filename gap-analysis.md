@@ -83,7 +83,7 @@
 
 ## Critical: embed.rs lint error
 
-The `patch` call triggered a cargo check failure: `file does not exist`. This is a cargo check issue on the Docker/MSYS2 path, not an actual file issue. The file exists at `C:\Users\nabi\PaladinsCat\src\discord-bot-rust\src\embeds.rs`.
+The `patch` call triggered a cargo check failure: `file does not exist`. This is a cargo check issue on the Docker/MSYS2 path, not an actual file issue. The file exists at `Z:\NABI\Project\PaladinsCat\src\discord-bot-rust\src\embeds.rs`.
 
 Next steps:
 1. Build Docker image to verify compilation
