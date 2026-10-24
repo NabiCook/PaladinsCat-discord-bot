@@ -2,7 +2,8 @@
 //!
 //! Read local templates/CSS, resolve game assets, and escape interpolated content.
 //! Document builders return HTML; the renderer owns Chromium navigation and screenshot capture.
-//! refs: doc: documents/05-operations/runbooks/discord-bot.md
+//! Automatic AFK/Boosted labels format backend booleans; community-vote presentation stays separate.
+//! refs: doc: documents/05-operations/runbooks/discord-bot.md; see: crate::api::AutomaticModerationFlags
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -10,6 +11,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 
+use crate::api::AutomaticModerationFlags;
 use base64::Engine as _;
 
 use super::asset_catalog::AssetCatalog;
@@ -830,8 +832,8 @@ impl TemplateEngine {
                 }
                 let community_afk = bool_of(player.get("afk_wintrade"))
                     && num(player.get("afk_wintrade_vote_count")) >= PLAYER_TAG_MINIMUM_COUNT;
-                let automatic_afk =
-                    num(player.get("automatic_afk_count")) >= PLAYER_TAG_MINIMUM_COUNT;
+                let automatic_flags = AutomaticModerationFlags::from_json(player);
+                let automatic_afk = automatic_flags.automatic_afk == Some(true);
                 if community_afk || automatic_afk {
                     moderation_tags.push((
                         match (automatic_afk, community_afk) {
@@ -857,9 +859,7 @@ impl TemplateEngine {
                         moderation_tags.push((class, label));
                     }
                 }
-                if bool_of(player.get("boosted"))
-                    && num(player.get("boosted_match_count")) >= PLAYER_TAG_MINIMUM_COUNT
-                {
+                if automatic_flags.boosted == Some(true) {
                     moderation_tags.push(("boosted", "BOOST"));
                 }
                 if bool_of(player.get("alt_account"))
@@ -1326,7 +1326,7 @@ mod tests {
     }
 
     #[test]
-    fn match_document_uses_the_inclusive_five_count_tag_boundary() {
+    fn match_document_keeps_community_threshold_separate_from_automatic_labels() {
         let mut record = fake_record();
         record["players"][0]["sus_count"] = serde_json::json!(4);
         record["players"][1]["sus_count"] = serde_json::json!(5);
@@ -1336,6 +1336,7 @@ mod tests {
         record["players"][1]["afk_wintrade"] = serde_json::json!(true);
         record["players"][1]["afk_wintrade_vote_count"] = serde_json::json!(5);
         record["players"][1]["automatic_afk_count"] = serde_json::json!(5);
+        record["players"][1]["automatic_afk"] = serde_json::json!(false);
         record["players"][1]["tank_diff_count"] = serde_json::json!(5);
         record["players"][1]["boosted"] = serde_json::json!(true);
         record["players"][1]["boosted_match_count"] = serde_json::json!(5);
@@ -1349,10 +1350,43 @@ mod tests {
 
         assert_eq!(doc.matches("player-status-tag suspicious").count(), 1);
         assert!(doc.contains("player-status-tag dropper\">DROP"));
-        assert!(doc.contains("player-status-tag afk automatic-community\">AFK"));
+        assert!(doc.contains("player-status-tag afk community-only\">AFK"));
         assert!(doc.contains("player-status-tag wall-shooter\">WALL"));
         assert!(doc.contains("player-status-tag performance-diff tank-diff\">TANK"));
         assert!(doc.contains("player-status-tag boosted\">BOOST"));
+    }
+
+    #[test]
+    fn automatic_moderation_labels_follow_backend_booleans_not_counts() {
+        let engine = TemplateEngine {
+            match_template: Arc::new(String::new()),
+            canonical_match_css: None,
+            cheater_pattern_url: String::new(),
+            assets: AssetCatalog::new("missing-test-assets"),
+        };
+        for count in 1..=9 {
+            for authority in [Some(true), Some(false), None] {
+                let mut record = fake_record();
+                let player = &mut record["players"][0];
+                player["automatic_afk_count"] = serde_json::json!(count);
+                player["boosted_match_count"] = serde_json::json!(count);
+                if let Some(flag) = authority {
+                    player["automatic_afk"] = serde_json::json!(flag);
+                    player["boosted"] = serde_json::json!(flag);
+                }
+                let doc = engine.match_document(&record);
+                assert_eq!(
+                    doc.contains("player-status-tag afk automatic-only\">AFK"),
+                    authority == Some(true),
+                    "automatic AFK: count={count}, flag={authority:?}"
+                );
+                assert_eq!(
+                    doc.contains("player-status-tag boosted\">BOOST"),
+                    authority == Some(true),
+                    "boosted: count={count}, flag={authority:?}"
+                );
+            }
+        }
     }
 
     #[test]

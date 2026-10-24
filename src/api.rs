@@ -2,7 +2,8 @@
 //!
 //! Normal and slow clients attach optional service tokens; only the static champion roster is cached.
 //! GET rate-limit retries are bounded; mutations use explicit PUT, POST, or DELETE requests.
-//! refs: doc: documents/05-operations/runbooks/discord-bot.md
+//! Automatic AFK/Boosted decisions are strict optional backend booleans, never evidence thresholds.
+//! refs: doc: documents/05-operations/runbooks/discord-bot.md; endpoints: GET /players/bulk
 
 use crate::service_auth::ServiceTokenProvider;
 use moka::future::Cache;
@@ -82,6 +83,55 @@ mod tests {
         assert_eq!(player["automatic_afk_count"], 4);
         assert_eq!(player["wall_shooter_count"], 5);
         assert_eq!(player["hypercarry_count"], 6);
+    }
+
+    #[test]
+    fn automatic_moderation_hydration_preserves_backend_boolean_authority() {
+        for count in 1..=9 {
+            for authority in [Some(true), Some(false), None] {
+                let mut row = serde_json::json!({
+                    "automatic_afk_count": count,
+                    "boosted_match_count": count,
+                });
+                if let Some(flag) = authority {
+                    row["automatic_afk"] = serde_json::json!(flag);
+                    row["boosted"] = serde_json::json!(flag);
+                }
+                let mut player = serde_json::Map::new();
+                merge_public_moderation(&mut player, &row);
+                for field in ["automatic_afk", "boosted"] {
+                    assert_eq!(
+                        player.get(field).and_then(|v| v.as_bool()),
+                        authority,
+                        "{field}, count={count}"
+                    );
+                    assert_eq!(player.contains_key(field), authority.is_some());
+                }
+                assert_eq!(player["automatic_afk_count"], count);
+                assert_eq!(player["boosted_match_count"], count);
+            }
+        }
+    }
+
+    #[test]
+    fn automatic_moderation_hydration_rejects_non_boolean_authority() {
+        for value in [
+            serde_json::json!("true"),
+            serde_json::json!(1),
+            serde_json::json!(null),
+            serde_json::json!([]),
+        ] {
+            let mut player = serde_json::Map::new();
+            merge_public_moderation(
+                &mut player,
+                &serde_json::json!({
+                    "automatic_afk": value, "boosted": value,
+                    "automatic_afk_count": 100, "boosted_match_count": 100,
+                }),
+            );
+            assert!(!player.contains_key("automatic_afk"));
+            assert!(!player.contains_key("boosted"));
+        }
     }
 
     #[test]
@@ -357,14 +407,39 @@ fn history_request_error(error: reqwest::Error) -> ApiError {
     }
 }
 
-const PUBLIC_MODERATION_FIELDS: [&str; 20] = [
+/// Carry backend-owned automatic label decisions without interpreting evidence counts.
+///
+/// Missing/null/wrongly typed authority remains None, distinct from explicit false.
+/// I/O: GET /players/bulk JSON booleans -> optional boolean flags; no I/O or policy computation.
+/// refs: endpoints: GET /players/bulk; doc: documents/02-technical/pipeline/moderation-tag-projections.md
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AutomaticModerationFlags {
+    pub automatic_afk: Option<bool>,
+    pub boosted: Option<bool>,
+}
+
+impl AutomaticModerationFlags {
+    /// Read strict boolean flags from a backend row; never infer them from counts.
+    ///
+    /// I/O: `&serde_json::Value` -> `AutomaticModerationFlags`; no side effects.
+    /// refs: endpoints: GET /players/bulk
+    pub(crate) fn from_json(row: &serde_json::Value) -> Self {
+        Self {
+            automatic_afk: row
+                .get("automatic_afk")
+                .and_then(serde_json::Value::as_bool),
+            boosted: row.get("boosted").and_then(serde_json::Value::as_bool),
+        }
+    }
+}
+
+const PUBLIC_MODERATION_FIELDS: [&str; 19] = [
     "cheater",
     "sus_count",
     "dropper",
     "dropper_vote_count",
     "afk_wintrade",
     "afk_wintrade_vote_count",
-    "boosted",
     "boosted_match_count",
     "alt_account",
     "alt_account_vote_count",
@@ -380,6 +455,10 @@ const PUBLIC_MODERATION_FIELDS: [&str; 20] = [
     "verified",
 ];
 
+/// Hydrate public evidence separately from the backend's typed automatic decisions.
+///
+/// I/O: mutable player Map and backend moderation Value -> (); missing decisions stay absent.
+/// refs: endpoints: GET /players/bulk; see: AutomaticModerationFlags
 fn merge_public_moderation(
     player: &mut serde_json::Map<String, serde_json::Value>,
     moderation: &serde_json::Value,
@@ -387,6 +466,17 @@ fn merge_public_moderation(
     for field in PUBLIC_MODERATION_FIELDS {
         if let Some(value) = moderation.get(field).filter(|value| !value.is_null()) {
             player.insert(field.to_string(), value.clone());
+        }
+    }
+    let flags = AutomaticModerationFlags::from_json(moderation);
+    for (field, value) in [
+        ("automatic_afk", flags.automatic_afk),
+        ("boosted", flags.boosted),
+    ] {
+        if let Some(value) = value {
+            player.insert(field.to_string(), serde_json::Value::Bool(value));
+        } else {
+            player.remove(field);
         }
     }
 }
