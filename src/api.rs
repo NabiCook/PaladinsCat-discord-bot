@@ -787,7 +787,7 @@ impl ApiClient {
     }
 
     /// Resolve an exact name or numeric ID through the backend identity owner.
-    /// I/O: player input -> typed resolved JSON or error; no local search fallback.
+    /// I/O: in `input: &str` (exact name or numeric ID) -> out `Result<serde_json::Value, ApiError>`; no local search fallback.
     /// Ambiguous identities require an ID; an older backend response is rejected.
     /// refs: endpoints: GET /players/search?exact=true
     pub async fn resolve_player(&self, input: &str) -> Result<serde_json::Value, ApiError> {
@@ -1019,7 +1019,7 @@ impl ApiClient {
     /// Encode nonempty filters and pass limit/offset without local clamping; an array is returned
     /// directly and other JSON is wrapped as one row. HTTP/auth/JSON failures return ApiError.
     ///
-    /// I/O: player id, limit, filters, explicit refresh -> history rows or ApiError.
+    /// I/O: in `player_id: &str`, `limit: usize`, `filters: &HistoryFilters`, `refresh: bool` -> out `Result<Vec<serde_json::Value>, ApiError>`.
     /// refs: endpoints: POST /players/discord/history
     pub async fn player_history(
         &self,
@@ -1058,7 +1058,7 @@ impl ApiClient {
     /// for null/empty arrays, or the single JSON value. HTTP/auth/JSON failures
     /// return ApiError.
     ///
-    /// I/O: player id, explicit refresh -> newest history row or ApiError.
+    /// I/O: in `player_id: &str`, `refresh: bool` -> out `Result<Option<serde_json::Value>, ApiError>`.
     /// refs: endpoints: POST /players/discord/history
     pub async fn latest_player_match(
         &self,
